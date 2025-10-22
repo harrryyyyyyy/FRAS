@@ -1,0 +1,114 @@
+/* Define SBI brand colors */
+:root {
+    --sbi-blue: #0065A4;
+    --sbi-lightblue: #00AEEF;
+    --sbi-darkblue: #00497C;
+}
+
+/* UPDATED: Make html/body full height for vertical centering */
+html, body {
+    height: 100%;
+}
+
+body {
+    font-family: 'Roboto', sans-serif;
+    /* Use the gradient as a background */
+    background: linear-gradient(135deg, var(--sbi-blue), var(--sbi-lightblue));
+    /* d-flex classes in the HTML body tag handle the centering */
+}
+
+/* Custom Card Styling */
+#register-card {
+    border-radius: 20px;
+    animation: fadeIn 0.8s ease forwards;
+    width: 100%; /* Ensures card fills the new, wider column */
+}
+
+.logo {
+    width: 90px;
+    margin: 0 auto;
+}
+
+.sbi-blue {
+    color: var(--sbi-blue);
+}
+
+/* Custom Bootstrap Theme Colors */
+.btn-primary {
+    background-color: var(--sbi-blue);
+    border-color: var(--sbi-blue);
+    transition: all 0.3s ease;
+}
+
+.btn-primary:hover {
+    background-color: var(--sbi-darkblue);
+    border-color: var(--sbi-darkblue);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+}
+
+/* Style form inputs on focus */
+.form-control:focus {
+    border-color: var(--sbi-blue);
+    box-shadow: 0 0 0 0.25rem rgba(0, 101, 164, 0.25);
+}
+
+.form-control:focus + .input-group-text,
+.input-group:focus-within .input-group-text {
+    color: var(--sbi-blue);
+    border-color: var(--sbi-blue);
+}
+
+.input-group-text {
+    width: 42px; /* Ensures all icons are aligned */
+    justify-content: center;
+    transition: all 0.3s ease;
+}
+
+/* Video Styling */
+.video-wrapper {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #ddd;
+    line-height: 0; /* Fixes potential whitespace issue */
+}
+
+video {
+    width: 100%;
+    display: block;
+    background-color: #000;
+}
+
+/* Status Text Colors */
+.status-text {
+    min-height: 1.2em;
+    font-size: 1.1rem;
+}
+.text-success {
+    color: #198754 !important;
+}
+.text-danger {
+    color: #dc3545 !important;
+}
+
+/* Fade-in Animation */
+@keyframes fadeIn {
+    0% { opacity: 0; transform: translateY(-20px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+
+select.form-control {
+    width: 100%;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #ccc;
+    font-size: 1rem;
+    background-color: #fff;
+    color: #333;
+}
+
+select.form-control:focus {
+    border-color: #0065A4;
+    outline: none;
+    box-shadow: 0 0 5px rgba(0, 101, 164, 0.5);
+}
