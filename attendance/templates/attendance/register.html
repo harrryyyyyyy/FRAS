@@ -224,7 +224,7 @@
                     clearTimeout(timeoutId);
                     const data = await res.json().catch(() => ({})); // Try to parse JSON safely
                     if (!res.ok) throw new Error(data.message || `Server responded with ${res.status}`);
-                    return res.json();
+                    return data;
                 })
                 .then(data => {
                     status.textContent = data.message;
