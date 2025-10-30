@@ -5,7 +5,7 @@
     {% load static %}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mark Attendance</title>
+    <title>Touchless Mark Attendance</title>
     <link rel="icon" href="{% static 'sbi_logo.png' %}">
 
     <!-- Bootstrap -->
@@ -91,8 +91,8 @@
 <body>
     <div class="card">
         <img src="{% static 'sbi_logo.png' %}" alt="SBI Logo" class="logo">
-        <h1 class="h4 fw-bold sbi-blue mb-2">Mark Attendance</h1>
-        <p class="text-muted mb-3">Align your face with the camera and capture to mark your attendance.</p>
+        <h1 class="h4 fw-bold sbi-blue mb-2">Touchless Mark Attendance</h1>
+        <p class="text-muted mb-3">Align your face with the camera and wave your hand to Capture Attendance.</p>
 
         <div class="video-wrapper">
             <video id="video" autoplay></video>
@@ -103,38 +103,11 @@
         <p id="status" class="status-text"></p>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
     <script>
-        function speak(text) {
-            if (!('speechSynthesis' in window)) {
-                console.warn("Speech synthesis not supported in this browser.");
-                return;
-            }
-
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = 'en-IN';
-            utterance.rate = 1;
-            utterance.pitch = 1;
-
-            function setVoice() {
-                const voices = speechSynthesis.getVoices();
-                let voice = voices.find(v => v.lang === 'hi-IN')
-                    || voices.find(v => v.lang === 'en-GB')
-                    || voices.find(v => v.lang.startsWith('en'))
-                    || voices[0];
-
-                if (voice) utterance.voice = voice;
-
-                speechSynthesis.cancel();
-                speechSynthesis.speak(utterance);
-            }
-
-            if (speechSynthesis.getVoices().length === 0) {
-                speechSynthesis.onvoiceschanged = setVoice;
-            } else {
-                setVoice();
-            }
-        }
-
+        // === CSRF and DOM references ===
         function getCookie(name) {
             let cookieValue = null;
             if (document.cookie && document.cookie !== '') {
@@ -156,6 +129,7 @@
         const btn = document.getElementById('captureBtn');
         const status = document.getElementById('status');
 
+        // === Start camera ===
         navigator.mediaDevices.getUserMedia({ video: true })
             .then(stream => video.srcObject = stream)
             .catch(err => {
@@ -164,6 +138,7 @@
                 status.classList.add('text-danger');
             });
 
+        // === Timeout handler ===
         let timeoutHandle = null;
         function startTimeout() {
             clearTimeout(timeoutHandle);
@@ -176,7 +151,8 @@
             }, 30000);
         }
 
-        btn.addEventListener('click', () => {
+        // === Capture function (shared between button & wave trigger) ===
+        function captureAndSend() {
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
             status.textContent = "Processing attendance...";
@@ -194,35 +170,86 @@
             const formData = new FormData();
             formData.append('image', imageData);
 
-            fetch('/mark/', {
+            fetch('/touchless_mark/', {
                 method: 'POST',
                 headers: { 'X-CSRFToken': csrftoken },
                 body: formData
-            }).then(res => {
-                if (!res.ok) throw new Error('Server responded with ' + res.status);
-                return res.json();
-            }).then(data => {
-                clearTimeout(timeoutHandle);
-                if (data.success) {
-                    status.textContent = data.message || "Attendance marked successfully!";
-                    status.classList.remove('text-danger', 'sbi-blue');
-                    status.classList.add('text-success');
-                    speak(data.message) //speaks the output message
-                } else {
-                    status.textContent = data.message || "Face not recognized. Try again.";
+            })
+                .then(res => {
+                    if (!res.ok) throw new Error('Server responded with ' + res.status);
+                    return res.json();
+                }).then(data => {
+                    clearTimeout(timeoutHandle);
+                    if (data.success) {
+                        status.innerHTML = data.message.replaceAll(',', '<br>');
+                        status.classList.remove('text-danger', 'sbi-blue');
+                        status.classList.add('text-success');
+                    } else {
+                        status.textContent = data.message || "Face not recognized. Try again.";
+                        status.classList.remove('text-success', 'sbi-blue');
+                        status.classList.add('text-danger');
+                    }
+                })
+                .catch(err => {
+                    clearTimeout(timeoutHandle);
+                    status.textContent = 'Error: ' + err.message;
                     status.classList.remove('text-success', 'sbi-blue');
                     status.classList.add('text-danger');
-                }
-            }).catch(err => {
-                clearTimeout(timeoutHandle);
-                status.textContent = 'Error: ' + err.message;
-                status.classList.remove('text-success', 'sbi-blue');
-                status.classList.add('text-danger');
-            }).finally(() => {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-camera"></i> Capture & Mark Attendance';
-            });
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-camera"></i> Capture & Mark Attendance';
+                });
+        }
+
+        // === Button trigger (still works manually) ===
+        btn.addEventListener('click', captureAndSend);
+
+        // === Add gesture detection (MediaPipe Hands) ===
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
         });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+
+        let lastX = null;
+        let lastWaveTime = 0;
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0];
+                const x = hand[0].x;  // Wrist x-coordinate
+
+                if (lastX !== null) {
+                    const movement = Math.abs(x - lastX);
+                    const now = Date.now();
+                    if (movement > 0.06 && now - lastWaveTime > 2500) { // Adjust sensitivity & cooldown
+                        lastWaveTime = now;
+                        console.log("✋ Wave detected — capturing image...");
+                        status.textContent = "Wave detected! Capturing attendance...";
+                        status.classList.remove('text-danger');
+                        status.classList.add('sbi-blue');
+                        captureAndSend();
+                    }
+                }
+                lastX = x;
+            }
+        });
+
+        // === Start MediaPipe camera ===
+        const camera = new Camera(video, {
+            onFrame: async () => {
+                await hands.send({ image: video });
+            },
+            width: 640,
+            height: 480
+        });
+        camera.start();
     </script>
 
 

@@ -1,0 +1,165 @@
+<!-- {% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Touchless Attendance</title>
+    <style>
+        body {
+            text-align: center;
+            background-color: #f0f4ff;
+            font-family: Arial, sans-serif;
+        }
+        video {
+            border: 3px solid #0072CE;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 600px;
+            margin-top: 20px;
+        }
+        #status {
+            margin-top: 20px;
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+        .text-success { color: green; }
+        .text-danger { color: red; }
+        .sbi-blue { color: #0072CE; }
+    </style>
+</head>
+<body>
+    <h2>👁️ Touchless Face Recognition Attendance</h2>
+
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+    <div id="status" class="sbi-blue">Initializing camera...</div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const status = document.getElementById('status');
+
+        // CSRF token helper
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let cookie of cookies) {
+                    cookie = cookie.trim();
+                    if (cookie.startsWith(name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+        const csrftoken = getCookie('csrftoken');
+
+        // Start camera
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => video.srcObject = stream)
+            .catch(err => {
+                console.error('Camera error:', err);
+                status.textContent = 'Error: Unable to access camera.';
+                status.classList.add('text-danger');
+            });
+
+        // Use FaceDetector API (Chrome, Edge, Android)
+        let faceDetector;
+        if ('FaceDetector' in window) {
+            faceDetector = new FaceDetector({ fastMode: true });
+        } else {
+            status.textContent = "⚠️ Face detection not supported in this browser.";
+            status.classList.add('text-danger');
+        }
+
+        let lastDetectionTime = 0;
+        const detectionCooldown = 8000; // 8 seconds between recognitions
+
+        async function detectAndSend() {
+            if (!faceDetector) return;
+            try {
+                const faces = await faceDetector.detect(video);
+                if (faces.length > 0) {
+                    const now = Date.now();
+                    if (now - lastDetectionTime < detectionCooldown) return;
+                    lastDetectionTime = now;
+                    captureAndSend();
+                }
+            } catch (err) {
+                console.error("Face detection error:", err);
+            }
+            requestAnimationFrame(detectAndSend);
+        }
+
+        function captureAndSend() {
+            const context = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0);
+            const imageData = canvas.toDataURL('image/png');
+
+            status.textContent = "Recognizing face...";
+            status.classList.remove('text-success', 'text-danger');
+            status.classList.add('sbi-blue');
+
+            const formData = new FormData();
+            formData.append('image', imageData);
+
+            fetch('/touchless_mark/', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrftoken },
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    status.textContent = data.message;
+                    status.classList.remove('text-danger');
+                    status.classList.add('text-success');
+                    speak(data.message);
+                } else {
+                    status.textContent = data.message;
+                    status.classList.remove('text-success');
+                    status.classList.add('text-danger');
+                }
+            })
+            .catch(err => {
+                status.textContent = 'Error: ' + err.message;
+                status.classList.remove('text-success');
+                status.classList.add('text-danger');
+            });
+        }
+
+        // Speech synthesis
+        function speak(text) {
+            if (!('speechSynthesis' in window)) return;
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-IN';
+            utterance.rate = 1;
+            utterance.pitch = 1;
+
+            function setVoice() {
+                const voices = speechSynthesis.getVoices();
+                let voice = voices.find(v => v.lang === 'hi-IN')
+                    || voices.find(v => v.lang === 'en-IN')
+                    || voices.find(v => v.lang.startsWith('en'))
+                    || voices[0];
+                if (voice) utterance.voice = voice;
+                speechSynthesis.cancel();
+                speechSynthesis.speak(utterance);
+            }
+
+            if (speechSynthesis.getVoices().length === 0) {
+                speechSynthesis.onvoiceschanged = setVoice;
+            } else {
+                setVoice();
+            }
+        }
+
+        // Start the detection loop
+        requestAnimationFrame(detectAndSend);
+    </script>
+</body>
+</html> -->

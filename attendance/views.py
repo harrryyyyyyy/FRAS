@@ -80,64 +80,133 @@ def find_best_match(new_embedding, cache, threshold):
     return best_user_id, best_score
 
 # mark
-# @csrf_exempt
-# def mark_attendance(request):
-    # if request.method == 'POST':
-    #     image_data = request.POST.get('image')
-    #     if not image_data:
-    #         return JsonResponse({'message': 'No image data provided.'}, status=400)
-
-    #     try:
-    #         format, imgstr = image_data.split(';base64,')
-    #         image_bytes = base64.b64decode(imgstr)
-    #         np_arr = np.frombuffer(image_bytes, np.uint8)
-    #         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            
-    #         if img is None:
-    #             raise ValueError("Could not decode image.")
-    #     except Exception as e:
-    #         print(f"Image decode error: {e}")
-    #         return JsonResponse({'success': False, 'message': 'Invalid image format.'}, status=400)
-
-    #     new_embedding = get_face_embedding(img)
-    #     if new_embedding is None:
-    #         return JsonResponse({'success': False, 'message': 'No face detected or poor image quality.'}, status=400)
-
-    #     matched_user_id, score = find_best_match(new_embedding, known_faces_cache, threshold=0.6)
-        
-    #     if matched_user_id:
-    #         try:
-    #             user = User_Detail.objects.get(userId=matched_user_id)
-                
-    #             # --- Check-in/Check-out Logic ---
-    #             today = timezone.now().date()
-    #             existing_attendance = Attendance.objects.filter(user=user, timestamp__date=today).order_by('-timestamp').first()
-                
-    #             status = not existing_attendance.isCheckin if existing_attendance else True
-    #             output_status = 'Check-In' if status else 'Check-Out'
-    #             output_message = 'Welcome' if status else 'Thank You'
-
-    #             Attendance.objects.create(user=user, isCheckin=status)
-                
-    #             user_name = known_faces_cache[matched_user_id]['name']
-    #             return JsonResponse({'success': True, 'message': f'{output_status}, {user_name}! Status: {output_status}, Score:{score}'})
-
-    #         except User_Detail.DoesNotExist:
-    #              return JsonResponse({'success': False, 'message': 'Match found but user not in DB.'}, status=404)
-    #     else:
-    #         return JsonResponse({'success': False, 'message': 'Face not recognized.'}, status=404)
-
-    # return render(request, 'attendance/mark_attendance.html')
-
-
-
 @csrf_exempt
 def mark_attendance(request):
     if request.method == 'POST':
         image_data = request.POST.get('image')
         if not image_data:
+            return JsonResponse({'message': 'No image data provided.'}, status=400)
+
+        try:
+            format, imgstr = image_data.split(';base64,')
+            image_bytes = base64.b64decode(imgstr)
+            np_arr = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                raise ValueError("Could not decode image.")
+        except Exception as e:
+            print(f"Image decode error: {e}")
+            return JsonResponse({'success': False, 'message': 'Invalid image format.'}, status=400)
+
+        new_embedding = get_face_embedding(img)
+        if new_embedding is None:
+            return JsonResponse({'success': False, 'message': 'No face detected or poor image quality.'}, status=400)
+
+        matched_user_id, score = find_best_match(new_embedding, known_faces_cache, threshold=0.6)
+        
+        if matched_user_id:
+            try:
+                user = User_Detail.objects.get(userId=matched_user_id)
+                
+                # --- Check-in/Check-out Logic ---
+                today = timezone.now().date()
+                existing_attendance = Attendance.objects.filter(user=user, timestamp__date=today).order_by('-timestamp').first()
+                
+                status = not existing_attendance.isCheckin if existing_attendance else True
+                output_status = 'Check-In' if status else 'Check-Out'
+                output_message = 'Welcome' if status else 'Thank You'
+
+                Attendance.objects.create(user=user, isCheckin=status)
+                
+                user_name = known_faces_cache[matched_user_id]['name']
+                return JsonResponse({'success': True, 'message': f'{output_message}, {user_name}!'})
+                # return JsonResponse({'success': True, 'message': f'{output_message}, {user_name}! Status: {output_status}, Score:{score:.2f}'})
+
+            except User_Detail.DoesNotExist:
+                 return JsonResponse({'success': False, 'message': 'Match found but user not in DB.'}, status=404)
+        else:
+            return JsonResponse({'success': False, 'message': 'Face not recognized.'}, status=404)
+
+    return render(request, 'attendance/mark_attendance.html')
+
+
+
+# @csrf_exempt
+# def mark_attendance(request):
+#     if request.method == 'POST':
+#         image_data = request.POST.get('image')
+#         if not image_data:
+#             return JsonResponse({'success': False, 'message': 'No image data provided.'}, status=400)
+
+#         try:
+#             format, imgstr = image_data.split(';base64,')
+#             image_bytes = base64.b64decode(imgstr)
+#             np_arr = np.frombuffer(image_bytes, np.uint8)
+#             img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+#             if img is None:
+#                 raise ValueError("Could not decode image.")
+#         except Exception as e:
+#             print(f"Image decode error: {e}")
+#             return JsonResponse({'success': False, 'message': 'Invalid image format.'}, status=400)
+
+#         # --- Detect all faces ---
+#         try:
+#             faces = face_app.get(img)
+#             if not faces:
+#                 return JsonResponse({'success': False, 'message': 'No faces detected in image.'}, status=400)
+#         except Exception as e:
+#             print(f"Face detection error: {e}")
+#             return JsonResponse({'success': False, 'message': 'Error detecting faces.'}, status=400)
+
+#         recognized_users = []
+
+#         # --- Process each detected face ---
+#         for face in faces:
+#             embedding = face.embedding
+#             norm = np.linalg.norm(embedding)
+#             if norm == 0:
+#                 continue
+#             embedding = embedding / norm
+
+#             matched_user_id, score = find_best_match(embedding, known_faces_cache, threshold=0.6)
+#             if not matched_user_id:
+#                 continue
+
+#             try:
+#                 user = User_Detail.objects.get(userId=matched_user_id)
+#                 today = timezone.now().date()
+#                 existing_attendance = Attendance.objects.filter(user=user, timestamp__date=today).order_by('-timestamp').first()
+                
+#                 status = not existing_attendance.isCheckin if existing_attendance else True
+#                 Attendance.objects.create(user=user, isCheckin=status)
+                
+#                 recognized_users.append({
+#                     'user': known_faces_cache[matched_user_id]['name'],
+#                     'status': 'Check-In' if status else 'Check-Out'
+#                 })
+#             except User_Detail.DoesNotExist:
+#                 print(f"User with ID {matched_user_id} not found in DB.")
+#                 continue
+
+#         if recognized_users:
+#             names = ', '.join([f"{u['user']} ({u['status']})" for u in recognized_users])
+#             return JsonResponse({'success': True, 'message': f'Attendance marked for: {names}'})
+#         else:
+#             return JsonResponse({'success': False, 'message': 'No known faces recognized.'}, status=404)
+
+#     return render(request, 'attendance/mark_attendance.html')
+
+
+# touchless_mark
+@csrf_exempt
+def touchless_mark_attendance(request):
+    if request.method == 'POST':
+        image_data = request.POST.get('image')
+        if not image_data:
             return JsonResponse({'success': False, 'message': 'No image data provided.'}, status=400)
 
+        # Process the image (hand gesture or face detection)
         try:
             format, imgstr = image_data.split(';base64,')
             image_bytes = base64.b64decode(imgstr)
@@ -149,7 +218,8 @@ def mark_attendance(request):
             print(f"Image decode error: {e}")
             return JsonResponse({'success': False, 'message': 'Invalid image format.'}, status=400)
 
-        # --- Detect all faces ---
+        # You can add hand gesture processing here or fallback to face detection
+        # For simplicity, let's assume you use face detection for now
         try:
             faces = face_app.get(img)
             if not faces:
@@ -158,9 +228,8 @@ def mark_attendance(request):
             print(f"Face detection error: {e}")
             return JsonResponse({'success': False, 'message': 'Error detecting faces.'}, status=400)
 
+        # Handle recognized users as in the original view
         recognized_users = []
-
-        # --- Process each detected face ---
         for face in faces:
             embedding = face.embedding
             norm = np.linalg.norm(embedding)
@@ -176,10 +245,10 @@ def mark_attendance(request):
                 user = User_Detail.objects.get(userId=matched_user_id)
                 today = timezone.now().date()
                 existing_attendance = Attendance.objects.filter(user=user, timestamp__date=today).order_by('-timestamp').first()
-                
+
                 status = not existing_attendance.isCheckin if existing_attendance else True
                 Attendance.objects.create(user=user, isCheckin=status)
-                
+
                 recognized_users.append({
                     'user': known_faces_cache[matched_user_id]['name'],
                     'status': 'Check-In' if status else 'Check-Out'
@@ -194,7 +263,8 @@ def mark_attendance(request):
         else:
             return JsonResponse({'success': False, 'message': 'No known faces recognized.'}, status=404)
 
-    return render(request, 'attendance/mark_attendance.html')
+    return JsonResponse({'success': False, 'message': 'Invalid request method.'}, status=400)
+
 
 # Register
 @csrf_exempt

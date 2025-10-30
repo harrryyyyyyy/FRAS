@@ -8,5 +8,6 @@ urlpatterns = [
     path('add-organization/', views.add_organization, name='add_organization'),
     
     path('mark/', views.mark_attendance, name='mark_attendance'),
+    path('touchless_mark/', views.touchless_mark_attendance, name='touchless_mark_attendance'),
     path('mark-face/', views.mark_attendance, name='mark_face'),
 ]
