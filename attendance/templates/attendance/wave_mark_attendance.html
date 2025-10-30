@@ -5,7 +5,7 @@
     {% load static %}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Touchless Mark Attendance</title>
+    <title>Wave Mark Attendance</title>
     <link rel="icon" href="{% static 'sbi_logo.png' %}">
 
     <!-- Bootstrap -->
@@ -91,7 +91,7 @@
 <body>
     <div class="card">
         <img src="{% static 'sbi_logo.png' %}" alt="SBI Logo" class="logo">
-        <h1 class="h4 fw-bold sbi-blue mb-2">Touchless Mark Attendance</h1>
+        <h1 class="h4 fw-bold sbi-blue mb-2">Wave Mark Attendance</h1>
         <p class="text-muted mb-3">Align your face with the camera and wave your hand to Capture Attendance.</p>
 
         <div class="video-wrapper">
@@ -106,7 +106,38 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 
-    <script>
+    <!-- <script>
+        function speak(text) {
+            if (!('speechSynthesis' in window)) {
+                console.warn("Speech synthesis not supported in this browser.");
+                return;
+            }
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-IN';
+            utterance.rate = 1;
+            utterance.pitch = 1;
+
+            function setVoice() {
+                const voices = speechSynthesis.getVoices();
+                let voice = voices.find(v => v.lang === 'hi-IN')
+                    || voices.find(v => v.lang === 'en-GB')
+                    || voices.find(v => v.lang.startsWith('en'))
+                    || voices[0];
+
+                if (voice) utterance.voice = voice;
+
+                speechSynthesis.cancel();
+                speechSynthesis.speak(utterance);
+            }
+
+            if (speechSynthesis.getVoices().length === 0) {
+                speechSynthesis.onvoiceschanged = setVoice;
+            } else {
+                setVoice();
+            }
+        }
+
         // === CSRF and DOM references ===
         function getCookie(name) {
             let cookieValue = null;
@@ -151,8 +182,12 @@
             }, 30000);
         }
 
+        let isProcessing = false;
         // === Capture function (shared between button & wave trigger) ===
         function captureAndSend() {
+            if (isProcessing) return;  // prevent double submission
+            isProcessing = true;
+
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
             status.textContent = "Processing attendance...";
@@ -170,7 +205,7 @@
             const formData = new FormData();
             formData.append('image', imageData);
 
-            fetch('/touchless_mark/', {
+            fetch('/wave-mark/', {
                 method: 'POST',
                 headers: { 'X-CSRFToken': csrftoken },
                 body: formData
@@ -184,6 +219,7 @@
                         status.innerHTML = data.message.replaceAll(',', '<br>');
                         status.classList.remove('text-danger', 'sbi-blue');
                         status.classList.add('text-success');
+                        speak(data.message) //speaks the output message
                     } else {
                         status.textContent = data.message || "Face not recognized. Try again.";
                         status.classList.remove('text-success', 'sbi-blue');
@@ -198,6 +234,7 @@
                 })
                 .finally(() => {
                     btn.disabled = false;
+                    isProcessing = false;
                     btn.innerHTML = '<i class="fa-solid fa-camera"></i> Capture & Mark Attendance';
                 });
         }
@@ -250,6 +287,178 @@
             height: 480
         });
         camera.start();
+    </script> -->
+
+    <script>
+        const waveMarkURL = "{% url 'wave_mark_attendance' %}";
+
+        function speak(text) {
+            if (!('speechSynthesis' in window)) return;
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-IN';
+            utterance.rate = 1;
+            utterance.pitch = 1;
+
+            function setVoice() {
+                const voices = speechSynthesis.getVoices();
+                utterance.voice = voices.find(v => v.lang === 'hi-IN')
+                    || voices.find(v => v.lang.startsWith('en'))
+                    || voices[0];
+                speechSynthesis.cancel();
+                speechSynthesis.speak(utterance);
+            }
+
+            if (speechSynthesis.getVoices().length === 0) {
+                speechSynthesis.onvoiceschanged = setVoice;
+            } else {
+                setVoice();
+            }
+        }
+
+        // --- CSRF Helper ---
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                document.cookie.split(';').forEach(cookie => {
+                    cookie = cookie.trim();
+                    if (cookie.startsWith(name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    }
+                });
+            }
+            return cookieValue;
+        }
+        const csrftoken = getCookie('csrftoken');
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const btn = document.getElementById('captureBtn');
+        const status = document.getElementById('status');
+
+        // --- Start camera ---
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => video.srcObject = stream)
+            .catch(err => {
+                console.error('Camera error:', err);
+                status.textContent = 'Error: Could not access camera.';
+                status.classList.add('text-danger');
+            });
+
+        // --- Timeout handler ---
+        let timeoutHandle = null;
+        function startTimeout() {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = setTimeout(() => {
+                status.textContent = "Request timed out. Please try again.";
+                status.classList.remove('text-success', 'sbi-blue');
+                status.classList.add('text-danger');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-camera"></i> Capture & Mark Attendance';
+            }, 30000);
+        }
+
+        let isProcessing = false;
+        let lastWaveTime = 0;
+
+        // --- Capture & send function ---
+        function captureAndSend() {
+            if (isProcessing) return;
+            isProcessing = true;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
+            status.textContent = "Processing attendance...";
+            status.classList.remove('text-success', 'text-danger');
+            status.classList.add('sbi-blue');
+
+            startTimeout();
+
+            const context = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0);
+            const imageData = canvas.toDataURL('image/png');
+
+            const formData = new FormData();
+            formData.append('image', imageData);
+
+            fetch(waveMarkURL, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrftoken },
+                body: formData
+            })
+                .then(res => {
+                    if (!res.ok) throw new Error('Server responded with ' + res.status);
+                    return res.json();
+                })
+                .then(data => {
+                    clearTimeout(timeoutHandle);
+                    if (data.success) {
+                        status.innerHTML = data.message.replaceAll(',', '<br>');
+                        status.classList.remove('text-danger', 'sbi-blue');
+                        status.classList.add('text-success');
+                        speak(data.message);
+                    } else {
+                        status.textContent = data.message || "Face not recognized. Try again.";
+                        status.classList.remove('text-success', 'sbi-blue');
+                        status.classList.add('text-danger');
+                    }
+                })
+                .catch(err => {
+                    clearTimeout(timeoutHandle);
+                    status.textContent = 'Error: ' + err.message;
+                    status.classList.remove('text-success', 'sbi-blue');
+                    status.classList.add('text-danger');
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-camera"></i> Capture & Mark Attendance';
+                    isProcessing = false;
+                });
+        }
+
+        btn.addEventListener('click', captureAndSend);
+
+        // --- MediaPipe Hands ---
+        const hands = new Hands({
+            locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+
+        let lastX = null;
+
+        hands.onResults(results => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0];
+                const x = hand[0].x;
+
+                if (lastX !== null) {
+                    const movement = Math.abs(x - lastX);
+                    const now = Date.now();
+                    if (movement > 0.06 && (now - lastWaveTime) > 3000) { // 3s debounce
+                        lastWaveTime = now;
+                        console.log("✋ Wave detected — capturing image...");
+                        status.textContent = "Wave detected! Capturing attendance...";
+                        status.classList.remove('text-danger');
+                        status.classList.add('sbi-blue');
+                        captureAndSend();
+                    }
+                }
+                lastX = x;
+            }
+        });
+
+        const cameraMP = new Camera(video, {
+            onFrame: async () => { await hands.send({ image: video }); },
+            width: 640,
+            height: 480
+        });
+        cameraMP.start();
     </script>
 
 

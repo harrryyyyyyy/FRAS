@@ -9,7 +9,7 @@ def load_model():
     )
     face_app.prepare(
         ctx_id=0,
-        det_size=(320, 320)
+        det_size=(480, 480)
     )
     return face_app
 

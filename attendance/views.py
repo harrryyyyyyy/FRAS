@@ -2,346 +2,304 @@ import base64
 import cv2
 import numpy as np
 import threading
+import uuid
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.utils import timezone
-from .models import User_Detail, Attendance, Organization
 from django.views.decorators.csrf import csrf_exempt
 from django.core.files.base import ContentFile
+from .models import User_Detail, Attendance, Organization
 from .face_model import face_app
 
-# Global cache for embeddings
+# GLOBALS & LOCKS
 known_faces_cache = {}
 cache_lock = threading.Lock()
 
-# --------- Load Known Faces ---------
+def json_response(success, message, code=200, **extra):
+    payload = {"success": success, "message": message}
+    payload.update(extra)
+    return JsonResponse(payload, status=code)
+
+def decode_image(image_data):
+    try:
+        _, img_str = image_data.split(';base64,')
+        img_bytes = base64.b64decode(img_str)
+        np_arr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        return img if img is not None else None
+    except Exception:
+        return None
+
 def load_known_faces():
-    """Pre-load all known face embeddings into cache"""
+    """Load all user embeddings into memory once."""
     global known_faces_cache
     with cache_lock:
-        if known_faces_cache:  # Cache already populated
-            return
+        if known_faces_cache:
+            return  # Already loaded
 
-        print("Loading known faces embeddings...")
-        
-        users_with_embeddings = User_Detail.objects.filter(embedding__isnull=False)
-
-        count = 0
-        for user in users_with_embeddings:
+        print("Loading face embeddings from database...")
+        users = User_Detail.objects.filter(embedding__isnull=False)
+        for user in users:
             try:
-                embedding_array = np.array(user.embedding, dtype=np.float32)
-                norm = np.linalg.norm(embedding_array)
+                emb = np.array(user.embedding, dtype=np.float32)
+                norm = np.linalg.norm(emb)
                 if norm == 0:
-                    print(f"Skipping user {user.userId}, invalid embedding.")
                     continue
-                normalized_embedding = embedding_array / norm
                 known_faces_cache[user.userId] = {
-                    'vendor': user.organization,
-                    'embedding': normalized_embedding, # Store the normalized embedding
-                    'name': str(user) # Get the display name from the __str__ method
+                    "embedding": emb / norm,
+                    "name": str(user),
+                    "org": user.organization,
                 }
-                count += 1
             except Exception as e:
-                print(f"Error loading embedding for user {user.userId}: {e}")
-        
-        print(f"Loaded {count} known faces from database.")
+                print(f"Error loading {user}: {e}")
+
+        print(f"Loaded {len(known_faces_cache)} embeddings into cache.")
 
 load_known_faces()
 
-def get_face_embedding(img):
+def get_face_embeddings(img):
     try:
         faces = face_app.get(img)
-        if not faces:
-            print("Mark Attendance: No face detected in image.")
-            return None
-        
-        embedding = faces[0].embedding
-        norm = np.linalg.norm(embedding)
-        if norm == 0:
-            return None
-        return embedding / norm
+        return [
+            f.embedding / np.linalg.norm(f.embedding)
+            for f in faces
+            if np.linalg.norm(f.embedding) > 0
+        ]
     except Exception as e:
-        print(f"Error during new embedding generation: {e}")
-        return None
+        print(f"Embedding error: {e}")
+        return []
 
-def find_best_match(new_embedding, cache, threshold):
-    best_score = -1
-    best_user_id = None
-    
+
+def find_best_match(embedding, threshold=0.6):
     with cache_lock:
-        for user_id, data in cache.items():
-            known_emb = data['embedding'] 
-            score = np.dot(new_embedding, known_emb)
-            
-            if score > best_score and score > threshold:
-                best_score = score
-                best_user_id = user_id
-                
-    return best_user_id, best_score
+        if not known_faces_cache:
+            return None, None
 
-# mark
+        user_ids = list(known_faces_cache.keys())
+        all_embs = np.stack([known_faces_cache[u]["embedding"] for u in user_ids])
+        sims = np.dot(all_embs, embedding)
+        idx = np.argmax(sims)
+        if sims[idx] >= threshold:
+            return user_ids[idx], sims[idx]
+        return None, None
+
+def mark_user_attendance(user):
+    today = timezone.now().date()
+    last = Attendance.objects.filter(user=user, timestamp__date=today).order_by('-timestamp').first()
+    is_checkin = not last.isCheckin if last else True
+    Attendance.objects.create(user=user, isCheckin=is_checkin)
+    return "Check-In" if is_checkin else "Check-Out"
+
+# Recogniton logic
+def process_image_for_attendance(img, mode="single", wave_detected=True):
+    embeddings = get_face_embeddings(img)
+    if not embeddings:
+        return json_response(False, "No faces detected.", 404)
+
+    if mode == "wave" and not wave_detected:
+        return json_response(False, "No wave detected.")
+
+    recognized = []
+    for emb in ([embeddings[0]] if mode == "single" else embeddings):
+        user_id, score = find_best_match(emb)
+        if not user_id:
+            continue
+
+        try:
+            user = User_Detail.objects.get(userId=user_id)
+            status = mark_user_attendance(user)
+            output_message = 'Welcome!' if status == 'Check-In' else 'Thank You!'
+            recognized.append(f"{output_message} {user} ({status})")
+        except User_Detail.DoesNotExist:
+            continue
+
+    if recognized:
+        return json_response(True, f"{', '.join(recognized)}")
+    return json_response(False, "No known faces recognized.", 404)
+
+
+# ENDPOINTS
+
+# button
 @csrf_exempt
 def mark_attendance(request):
-    if request.method == 'POST':
-        image_data = request.POST.get('image')
-        if not image_data:
-            return JsonResponse({'message': 'No image data provided.'}, status=400)
+    if request.method == "GET":
+        return render(request, "attendance/mark_attendance.html")
 
-        try:
-            format, imgstr = image_data.split(';base64,')
-            image_bytes = base64.b64decode(imgstr)
-            np_arr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            
-            if img is None:
-                raise ValueError("Could not decode image.")
-        except Exception as e:
-            print(f"Image decode error: {e}")
-            return JsonResponse({'success': False, 'message': 'Invalid image format.'}, status=400)
+    image_data = request.POST.get("image")
+    img = decode_image(image_data)
+    if img is None:
+        return json_response(False, "Invalid image data.")
+    return process_image_for_attendance(img, mode="single")
 
-        new_embedding = get_face_embedding(img)
-        if new_embedding is None:
-            return JsonResponse({'success': False, 'message': 'No face detected or poor image quality.'}, status=400)
-
-        matched_user_id, score = find_best_match(new_embedding, known_faces_cache, threshold=0.6)
-        
-        if matched_user_id:
-            try:
-                user = User_Detail.objects.get(userId=matched_user_id)
-                
-                # --- Check-in/Check-out Logic ---
-                today = timezone.now().date()
-                existing_attendance = Attendance.objects.filter(user=user, timestamp__date=today).order_by('-timestamp').first()
-                
-                status = not existing_attendance.isCheckin if existing_attendance else True
-                output_status = 'Check-In' if status else 'Check-Out'
-                output_message = 'Welcome' if status else 'Thank You'
-
-                Attendance.objects.create(user=user, isCheckin=status)
-                
-                user_name = known_faces_cache[matched_user_id]['name']
-                return JsonResponse({'success': True, 'message': f'{output_message}, {user_name}!'})
-                # return JsonResponse({'success': True, 'message': f'{output_message}, {user_name}! Status: {output_status}, Score:{score:.2f}'})
-
-            except User_Detail.DoesNotExist:
-                 return JsonResponse({'success': False, 'message': 'Match found but user not in DB.'}, status=404)
-        else:
-            return JsonResponse({'success': False, 'message': 'Face not recognized.'}, status=404)
-
-    return render(request, 'attendance/mark_attendance.html')
-
-
-
-# @csrf_exempt
-# def mark_attendance(request):
-#     if request.method == 'POST':
-#         image_data = request.POST.get('image')
-#         if not image_data:
-#             return JsonResponse({'success': False, 'message': 'No image data provided.'}, status=400)
-
-#         try:
-#             format, imgstr = image_data.split(';base64,')
-#             image_bytes = base64.b64decode(imgstr)
-#             np_arr = np.frombuffer(image_bytes, np.uint8)
-#             img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-#             if img is None:
-#                 raise ValueError("Could not decode image.")
-#         except Exception as e:
-#             print(f"Image decode error: {e}")
-#             return JsonResponse({'success': False, 'message': 'Invalid image format.'}, status=400)
-
-#         # --- Detect all faces ---
-#         try:
-#             faces = face_app.get(img)
-#             if not faces:
-#                 return JsonResponse({'success': False, 'message': 'No faces detected in image.'}, status=400)
-#         except Exception as e:
-#             print(f"Face detection error: {e}")
-#             return JsonResponse({'success': False, 'message': 'Error detecting faces.'}, status=400)
-
-#         recognized_users = []
-
-#         # --- Process each detected face ---
-#         for face in faces:
-#             embedding = face.embedding
-#             norm = np.linalg.norm(embedding)
-#             if norm == 0:
-#                 continue
-#             embedding = embedding / norm
-
-#             matched_user_id, score = find_best_match(embedding, known_faces_cache, threshold=0.6)
-#             if not matched_user_id:
-#                 continue
-
-#             try:
-#                 user = User_Detail.objects.get(userId=matched_user_id)
-#                 today = timezone.now().date()
-#                 existing_attendance = Attendance.objects.filter(user=user, timestamp__date=today).order_by('-timestamp').first()
-                
-#                 status = not existing_attendance.isCheckin if existing_attendance else True
-#                 Attendance.objects.create(user=user, isCheckin=status)
-                
-#                 recognized_users.append({
-#                     'user': known_faces_cache[matched_user_id]['name'],
-#                     'status': 'Check-In' if status else 'Check-Out'
-#                 })
-#             except User_Detail.DoesNotExist:
-#                 print(f"User with ID {matched_user_id} not found in DB.")
-#                 continue
-
-#         if recognized_users:
-#             names = ', '.join([f"{u['user']} ({u['status']})" for u in recognized_users])
-#             return JsonResponse({'success': True, 'message': f'Attendance marked for: {names}'})
-#         else:
-#             return JsonResponse({'success': False, 'message': 'No known faces recognized.'}, status=404)
-
-#     return render(request, 'attendance/mark_attendance.html')
-
-
-# touchless_mark
+# touchless
 @csrf_exempt
 def touchless_mark_attendance(request):
-    if request.method == 'POST':
-        image_data = request.POST.get('image')
-        if not image_data:
-            return JsonResponse({'success': False, 'message': 'No image data provided.'}, status=400)
+    if request.method == "GET":
+        return render(request, "attendance/touchless_mark_attendance.html")
 
-        # Process the image (hand gesture or face detection)
-        try:
-            format, imgstr = image_data.split(';base64,')
-            image_bytes = base64.b64decode(imgstr)
-            np_arr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            if img is None:
-                raise ValueError("Could not decode image.")
-        except Exception as e:
-            print(f"Image decode error: {e}")
-            return JsonResponse({'success': False, 'message': 'Invalid image format.'}, status=400)
+    if request.method == "POST":
+        img = decode_image(request.POST.get("image"))
+        if img is None:
+            return json_response(False, "Invalid image data.")
+        return process_image_for_attendance(img, mode="touchless")
 
-        # You can add hand gesture processing here or fallback to face detection
-        # For simplicity, let's assume you use face detection for now
-        try:
-            faces = face_app.get(img)
-            if not faces:
-                return JsonResponse({'success': False, 'message': 'No faces detected in image.'}, status=400)
-        except Exception as e:
-            print(f"Face detection error: {e}")
-            return JsonResponse({'success': False, 'message': 'Error detecting faces.'}, status=400)
+@csrf_exempt
+# def wave_mark_attendance(request):
+#     """Wave gesture — mark everyone visible."""
+#     if request.method != "POST":
+#         return json_response(False, "Invalid request method.")
+#     img = decode_image(request.POST.get("image"))
+#     if img is None:
+#         return json_response(False, "Invalid image data.")
+#     # TODO: Integrate real gesture detection here
+#     wave_detected = True
+#     return process_image_for_attendance(img, mode="wave", wave_detected=wave_detected)
 
-        # Handle recognized users as in the original view
-        recognized_users = []
-        for face in faces:
-            embedding = face.embedding
-            norm = np.linalg.norm(embedding)
-            if norm == 0:
-                continue
-            embedding = embedding / norm
+@csrf_exempt
+def wave_mark_attendance(request):
+    if request.method == "GET":
+        return render(request, "attendance/wave_mark_attendance.html")
 
-            matched_user_id, score = find_best_match(embedding, known_faces_cache, threshold=0.6)
-            if not matched_user_id:
-                continue
+    if request.method == "POST":
+        image_data = request.POST.get("image")
+        img = decode_image(image_data)
+        if img is None:
+            return json_response(False, "Invalid image data.")
+        wave_detected = True
+        return process_image_for_attendance(img, mode="wave", wave_detected=wave_detected)
 
-            try:
-                user = User_Detail.objects.get(userId=matched_user_id)
-                today = timezone.now().date()
-                existing_attendance = Attendance.objects.filter(user=user, timestamp__date=today).order_by('-timestamp').first()
+    return json_response(False, "Unsupported request method.")
 
-                status = not existing_attendance.isCheckin if existing_attendance else True
-                Attendance.objects.create(user=user, isCheckin=status)
-
-                recognized_users.append({
-                    'user': known_faces_cache[matched_user_id]['name'],
-                    'status': 'Check-In' if status else 'Check-Out'
-                })
-            except User_Detail.DoesNotExist:
-                print(f"User with ID {matched_user_id} not found in DB.")
-                continue
-
-        if recognized_users:
-            names = ', '.join([f"{u['user']} ({u['status']})" for u in recognized_users])
-            return JsonResponse({'success': True, 'message': f'Attendance marked for: {names}'})
-        else:
-            return JsonResponse({'success': False, 'message': 'No known faces recognized.'}, status=404)
-
-    return JsonResponse({'success': False, 'message': 'Invalid request method.'}, status=400)
-
-
-# Register
+# USER REGISTRATION
 @csrf_exempt
 def register_user(request):
-    if request.method == 'POST':
-        firstname = request.POST.get('firstname') or request.POST.get('name')
-        lastname = request.POST.get('lastname', '')
-        phone = request.POST.get('phone', '')
-        email = request.POST.get('email', '')
-        organization = request.POST.get('organization', '')
-        image_data = request.POST.get('image')
+    if request.method == "GET":
+        orgs = Organization.objects.all()
+        return render(request, "attendance/register.html", {"organizations": orgs})
 
-        if not firstname or not image_data:
-            return JsonResponse({'message': 'First name or image missing!'}, status=400)
-        
-        if User_Detail.objects.filter(phone=phone).exists():
-            return JsonResponse({'message': 'Duplicate mobile number!'}, status=400)
-        
-        if organization.strip().upper() == 'STATE BANK OF INDIA (SBI)':
-            isVendor = False
-        else:
-            isVendor = True
+    firstname = request.POST.get("firstname") or request.POST.get("name")
+    image_data = request.POST.get("image")
+    if not firstname or not image_data:
+        return json_response(False, "Name or image missing!")
 
-        format, imgstr = image_data.split(';base64,') 
-        ext = format.split('/')[-1]  # e.g., png
-        img_file = ContentFile(base64.b64decode(imgstr), name=f'{firstname}.{ext}')
+    phone = request.POST.get("phone", "")
+    if User_Detail.objects.filter(phone=phone).exists():
+        return json_response(False, "Duplicate mobile number!")
 
-        # Generate a unique userId (optional)
-        import uuid
-        userId = str(uuid.uuid4())
+    # Prepare image file
+    fmt, imgstr = image_data.split(";base64,")
+    ext = fmt.split("/")[-1]
+    img_file = ContentFile(base64.b64decode(imgstr), name=f"{firstname}.{ext}")
 
-        # Create and save the user
-        user = User_Detail(
-            userId=userId,
-            firstname=firstname,
-            lastname=lastname,
-            phone=phone,
-            email=email,
-            organization=organization,
-            isVendor=isVendor,
-            profile_pic=img_file
-        )
-        user.save()
+    org_name = request.POST.get("organization", "").strip()
+    is_vendor = org_name.upper() != "STATE BANK OF INDIA (SBI)"
 
-        if user.embedding:
+    user = User_Detail.objects.create(
+        userId=str(uuid.uuid4()),
+        firstname=firstname,
+        lastname=request.POST.get("lastname", ""),
+        phone=phone,
+        email=request.POST.get("email", ""),
+        organization=org_name,
+        isVendor=is_vendor,
+        profile_pic=img_file,
+    )
+
+    # Update cache if embedding exists
+    if user.embedding:
+        emb = np.array(user.embedding, dtype=np.float32)
+        norm = np.linalg.norm(emb)
+        if norm > 0:
             with cache_lock:
-                embedding_array = np.array(user.embedding, dtype=np.float32)
+                known_faces_cache[user.userId] = {
+                    "embedding": emb / norm,
+                    "name": str(user),
+                    "org": user.organization,
+                }
 
-                norm = np.linalg.norm(embedding_array)
-                if norm > 0:
-                    normalized_embedding = embedding_array / norm
-                    known_faces_cache[user.userId] = {
-                        'vendor': user.organization,
-                        'embedding': normalized_embedding,
-                        'name': str(user)
-                    }
-                    print(f"User {user.userId} added to live cache.")
+    return json_response(True, f"User {firstname} registered successfully!")
 
-        return JsonResponse({'message': f'User {firstname} registered successfully!'})
 
-    organizations = Organization.objects.all()
-    return render(request, 'attendance/register.html', {'organizations': organizations})
-
-# add vendor
-@csrf_exempt 
+# add organization
+@csrf_exempt
 def add_organization(request):
+    if request.method != "POST":
+        return json_response(False, "Invalid request method.")
+    name = request.POST.get("name", "").strip()
+    if not name:
+        return json_response(False, "Organization name is required.")
+    org, created = Organization.objects.get_or_create(name=name)
+    msg = "Organization added successfully!" if created else "Organization already exists."
+    return json_response(True, msg, name=org.name)
+
+@csrf_exempt
+def find_twin(request):
+    if request.method == "GET":
+        return render(request, "attendance/find_twin.html")
+
     if request.method == "POST":
-        org_name = request.POST.get("name", "").strip()
-        if not org_name:
-            return JsonResponse({"success": False, "message": "Organization name is required."})
+        image_data = request.POST.get("image")
+        user_threshold = float(request.POST.get("threshold", 0.6))
 
-        org, created = Organization.objects.get_or_create(name=org_name)
-        if created:
-            message = "Organization added successfully!"
-        else:
-            message = "Organization already exists."
+        img = decode_image(image_data)
+        if img is None:
+            return json_response(False, "Invalid image data.")
 
-        return JsonResponse({"success": True, "message": message, "name": org.name})
-    
-    return JsonResponse({"success": False, "message": "Invalid request method."})
+        embeddings = get_face_embeddings(img)
+        if not embeddings:
+            return json_response(False, "No faces detected.", 404)
+
+        emb = embeddings[0]
+
+        with cache_lock:
+            if not known_faces_cache:
+                return json_response(False, "No known faces in system.", 404)
+
+            user_ids = list(known_faces_cache.keys())
+            all_embs = np.stack([known_faces_cache[u]["embedding"] for u in user_ids])
+            sims = np.dot(all_embs, emb)
+
+            # Exclude self
+            max_sim = np.max(sims)
+            self_similarity_threshold = min(0.98, max_sim * 0.999)
+            mask = sims < self_similarity_threshold
+            if not mask.any():
+                return json_response(False, "No close match found.", similarity=float(max_sim))
+
+            sims_filtered = sims * mask
+
+            # Get top 2 matches
+            top_indices = sims_filtered.argsort()[::-1][:2]
+            results = []
+            for idx in top_indices:
+                score = float(sims_filtered[idx])
+                if score <= 0:
+                    continue
+                best_user_id = user_ids[idx]
+                best_user = User_Detail.objects.get(userId=best_user_id)
+                photo_url = best_user.profile_pic.url if best_user.profile_pic else None
+                results.append({
+                    "name": str(best_user),
+                    "similarity": round(score * 100, 2),
+                    # "photo_url": photo_url
+                })
+
+            if not results:
+                # fallback: return closest match even if below threshold
+                idx = np.argmax(sims_filtered)
+                best_user_id = user_ids[idx]
+                best_user = User_Detail.objects.get(userId=best_user_id)
+                results.append({
+                    "name": str(best_user),
+                    "similarity": round(float(sims_filtered[idx]) * 100, 2),
+                    # "photo_url": best_user.profile_pic.url if best_user.profile_pic else None
+                })
+
+            return json_response(
+                True,
+                "Found your look-alike(s)!",
+                lookalikes=results
+            )
+
+    return json_response(False, "Unsupported request method.")

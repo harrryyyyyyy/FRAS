@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    {% load static %}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Find My Look-Alike</title>
+    <link rel="icon" href="{% static 'sbi_logo.png' %}">
+
+    <!-- Bootstrap -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{% static 'register.css' %}">
+
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            background: linear-gradient(135deg, #0065A4, #00AEEF);
+            font-family: 'Roboto', sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .card {
+            width: 400px;
+            max-width: 90%;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            text-align: center;
+            background: #fff;
+        }
+
+        .logo {
+            width: 100px;
+            margin-bottom: 20px;
+        }
+
+        .video-wrapper {
+            position: relative;
+            margin: 20px 0;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 2px solid #0065A4;
+        }
+
+        video {
+            width: 100%;
+            display: block;
+        }
+
+        button {
+            background: #0065A4;
+            color: #fff;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            width: 100%;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            background: #00497C;
+        }
+
+        .status-text {
+            margin-top: 15px;
+            font-weight: bold;
+            color: #0065A4;
+        }
+
+        .sbi-blue {
+            color: #0065A4;
+        }
+
+        .match-photo {
+            margin-top: 20px;
+            border-radius: 10px;
+            width: 100%;
+            max-height: 250px;
+            object-fit: cover;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <img src="{% static 'sbi_logo.png' %}" alt="SBI Logo" class="logo">
+        <h1 class="h4 fw-bold sbi-blue mb-2">Find My Look-Alike</h1>
+        <p class="text-muted mb-3">Align your face with the camera, click the button, and discover who looks like you!
+        </p>
+
+        <div class="video-wrapper">
+            <video id="video" autoplay></video>
+            <canvas id="canvas" style="display:none;"></canvas>
+        </div>
+
+        <button id="findBtn"><i class="fa-solid fa-user-astronaut"></i> Find My Look-Alike</button>
+        <p id="status" class="status-text"></p>
+        <img id="matchPhoto" class="match-photo" alt="Matched user photo">
+    </div>
+
+    <!-- CSRF Helper + Face Logic -->
+    <script>
+        const findTwinURL = "{% url 'find_my_twin' %}";  // <-- Django URL name for your view
+
+        // --- Voice feedback ---
+        function speak(text) {
+            if (!('speechSynthesis' in window)) {
+                console.warn("Speech synthesis not supported in this browser.");
+                return;
+            }
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-IN';
+            utterance.rate = 1;
+            utterance.pitch = 1;
+
+            function setVoice() {
+                const voices = speechSynthesis.getVoices();
+                let voice = voices.find(v => v.lang === 'hi-IN')
+                    || voices.find(v => v.lang === 'en-GB')
+                    || voices.find(v => v.lang.startsWith('en'))
+                    || voices[0];
+
+                if (voice) utterance.voice = voice;
+
+                speechSynthesis.cancel();
+                speechSynthesis.speak(utterance);
+            }
+
+            if (speechSynthesis.getVoices().length === 0) {
+                speechSynthesis.onvoiceschanged = setVoice;
+            } else {
+                setVoice();
+            }
+        }
+
+        // --- CSRF token ---
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let cookie of cookies) {
+                    cookie = cookie.trim();
+                    if (cookie.startsWith(name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+        const csrftoken = getCookie('csrftoken');
+
+        // --- DOM references ---
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const btn = document.getElementById('findBtn');
+        const status = document.getElementById('status');
+        const matchPhoto = document.getElementById('matchPhoto');
+
+        // --- Start camera ---
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => video.srcObject = stream)
+            .catch(err => {
+                console.error('Camera error:', err);
+                status.textContent = 'Error: Could not access camera.';
+                status.classList.add('text-danger');
+            });
+
+        let isProcessing = false;
+
+        // --- Capture and send ---
+        // async function captureAndSend() {
+        //     if (isProcessing) return;
+        //     isProcessing = true;
+        //     btn.disabled = true;
+        //     status.textContent = "Finding your look-alike...";
+        //     status.classList.remove('text-success', 'text-danger');
+        //     status.classList.add('sbi-blue');
+        //     matchPhoto.style.display = "none";
+        //     btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
+
+        //     const ctx = canvas.getContext('2d');
+        //     canvas.width = video.videoWidth;
+        //     canvas.height = video.videoHeight;
+        //     ctx.drawImage(video, 0, 0);
+        //     const imageData = canvas.toDataURL('image/png');
+
+        //     const formData = new FormData();
+        //     formData.append('image', imageData);
+
+        //     try {
+        //         const res = await fetch(findTwinURL, {
+        //             method: 'POST',
+        //             headers: { 'X-CSRFToken': csrftoken },
+        //             body: formData
+        //         });
+        //         const data = await res.json();
+
+        //         if (data.success) {
+        //             status.innerHTML = `Your look-alike is <strong>${data.name}</strong>!<br>Similarity: ${data.similarity}%`;
+        //             status.classList.remove('text-danger');
+        //             status.classList.add('text-success');
+        //             speak(`Your look alike is ${data.name}`);
+        //             if (data.photo_url) {
+        //                 matchPhoto.src = data.photo_url;
+        //                 matchPhoto.style.display = "block";
+        //             }
+        //         } else {
+        //             status.textContent = data.message || "No close match found.";
+        //             status.classList.remove('text-success');
+        //             status.classList.add('text-danger');
+        //         }
+        //     } catch (err) {
+        //         console.error(err);
+        //         status.textContent = "Error: " + err.message;
+        //         status.classList.remove('text-success');
+        //         status.classList.add('text-danger');
+        //     } finally {
+        //         isProcessing = false;
+        //         btn.disabled = false;
+        //         btn.innerHTML = '<i class="fa-solid fa-user-astronaut"></i> Find My Look-Alike';
+        //     }
+        // }
+
+        async function captureAndSend() {
+            if (isProcessing) return;
+            isProcessing = true;
+            btn.disabled = true;
+            status.textContent = "Finding your look-alike...";
+            status.classList.remove('text-success', 'text-danger');
+            status.classList.add('sbi-blue');
+            matchPhoto.style.display = "none";
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
+
+            const ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0);
+            const imageData = canvas.toDataURL('image/png');
+
+            const formData = new FormData();
+            formData.append('image', imageData);
+
+            try {
+                const res = await fetch(findTwinURL, {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrftoken },
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (data.success && data.lookalikes && data.lookalikes.length > 0) {
+                    const first = data.lookalikes[0];
+                    status.innerHTML = `Your look-alike is <strong>${first.name}</strong>!<br>Similarity: ${first.similarity}%`;
+                    status.classList.remove('text-danger');
+                    status.classList.add('text-success');
+                    speak(`Your look alike is ${first.name}`);
+                    if (first.photo_url) {
+                        matchPhoto.src = first.photo_url;
+                        matchPhoto.style.display = "block";
+                    }
+                } else {
+                    status.textContent = data.message || "No close match found.";
+                    status.classList.remove('text-success');
+                    status.classList.add('text-danger');
+                }
+            } catch (err) {
+                console.error(err);
+                status.textContent = "Error: " + err.message;
+                status.classList.remove('text-success');
+                status.classList.add('text-danger');
+            } finally {
+                isProcessing = false;
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-user-astronaut"></i> Find My Look-Alike';
+            }
+        }
+
+        btn.addEventListener('click', captureAndSend);
+    </script>
+</body>
+
+</html>

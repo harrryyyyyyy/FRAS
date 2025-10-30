@@ -1,140 +1,112 @@
-<!-- {% load static %}
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+    {% load static %}
     <meta charset="UTF-8">
-    <title>Touchless Attendance</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Face Attendance</title>
+    <link rel="icon" href="{% static 'sbi_logo.png' %}">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% static 'register.css' %}">
+
     <style>
+        html,
         body {
+            height: 100%;
+            margin: 0;
+            background: linear-gradient(135deg, #0065A4, #00AEEF);
+            font-family: 'Roboto', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        .card {
+            width: 400px;
+            max-width: 90%;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
             text-align: center;
-            background-color: #f0f4ff;
-            font-family: Arial, sans-serif;
+            background: #fff;
         }
-        video {
-            border: 3px solid #0072CE;
+
+        .logo {
+            width: 100px;
+            margin-bottom: 20px;
+        }
+
+        .video-wrapper {
+            position: relative;
+            margin: 20px 0;
             border-radius: 10px;
-            width: 80%;
-            max-width: 600px;
-            margin-top: 20px;
+            overflow: hidden;
+            border: 2px solid #0065A4;
         }
-        #status {
-            margin-top: 20px;
-            font-size: 1.2rem;
+
+        video {
+            width: 100%;
+            display: block;
+        }
+
+        .status-text {
+            margin-top: 15px;
             font-weight: bold;
+            color: #0065A4;
         }
-        .text-success { color: green; }
-        .text-danger { color: red; }
-        .sbi-blue { color: #0072CE; }
+
+        .sbi-blue {
+            color: #0065A4;
+        }
     </style>
 </head>
-<body>
-    <h2>👁️ Touchless Face Recognition Attendance</h2>
 
-    <video id="video" autoplay muted playsinline></video>
-    <canvas id="canvas" style="display:none;"></canvas>
-    <div id="status" class="sbi-blue">Initializing camera...</div>
+<body>
+    <div class="card">
+        <img src="{% static 'sbi_logo.png' %}" alt="SBI Logo" class="logo">
+        <h1 class="h4 fw-bold sbi-blue mb-2">Auto Face Attendance</h1>
+        <p class="text-muted mb-3">Look at the camera. Your attendance will be marked automatically.</p>
+        <div class="video-wrapper">
+            <video id="video" autoplay muted></video>
+            <canvas id="canvas" style="display:none;"></canvas>
+        </div>
+        <p id="status" class="status-text"></p>
+    </div>
+
+    <!-- Load face-api.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
 
     <script>
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
         const status = document.getElementById('status');
+        const waveMarkURL = "{% url 'touchless_mark_attendance' %}";
 
-        // CSRF token helper
+        // --- CSRF Helper ---
         function getCookie(name) {
             let cookieValue = null;
             if (document.cookie && document.cookie !== '') {
-                const cookies = document.cookie.split(';');
-                for (let cookie of cookies) {
+                document.cookie.split(';').forEach(cookie => {
                     cookie = cookie.trim();
                     if (cookie.startsWith(name + '=')) {
                         cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                        break;
                     }
-                }
+                });
             }
             return cookieValue;
         }
         const csrftoken = getCookie('csrftoken');
 
-        // Start camera
-        navigator.mediaDevices.getUserMedia({ video: true })
-            .then(stream => video.srcObject = stream)
-            .catch(err => {
-                console.error('Camera error:', err);
-                status.textContent = 'Error: Unable to access camera.';
-                status.classList.add('text-danger');
-            });
-
-        // Use FaceDetector API (Chrome, Edge, Android)
-        let faceDetector;
-        if ('FaceDetector' in window) {
-            faceDetector = new FaceDetector({ fastMode: true });
-        } else {
-            status.textContent = "⚠️ Face detection not supported in this browser.";
-            status.classList.add('text-danger');
-        }
-
-        let lastDetectionTime = 0;
-        const detectionCooldown = 8000; // 8 seconds between recognitions
-
-        async function detectAndSend() {
-            if (!faceDetector) return;
-            try {
-                const faces = await faceDetector.detect(video);
-                if (faces.length > 0) {
-                    const now = Date.now();
-                    if (now - lastDetectionTime < detectionCooldown) return;
-                    lastDetectionTime = now;
-                    captureAndSend();
-                }
-            } catch (err) {
-                console.error("Face detection error:", err);
-            }
-            requestAnimationFrame(detectAndSend);
-        }
-
-        function captureAndSend() {
-            const context = canvas.getContext('2d');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            context.drawImage(video, 0, 0);
-            const imageData = canvas.toDataURL('image/png');
-
-            status.textContent = "Recognizing face...";
-            status.classList.remove('text-success', 'text-danger');
-            status.classList.add('sbi-blue');
-
-            const formData = new FormData();
-            formData.append('image', imageData);
-
-            fetch('/touchless_mark/', {
-                method: 'POST',
-                headers: { 'X-CSRFToken': csrftoken },
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    status.textContent = data.message;
-                    status.classList.remove('text-danger');
-                    status.classList.add('text-success');
-                    speak(data.message);
-                } else {
-                    status.textContent = data.message;
-                    status.classList.remove('text-success');
-                    status.classList.add('text-danger');
-                }
-            })
-            .catch(err => {
-                status.textContent = 'Error: ' + err.message;
-                status.classList.remove('text-success');
-                status.classList.add('text-danger');
-            });
-        }
-
-        // Speech synthesis
         function speak(text) {
-            if (!('speechSynthesis' in window)) return;
+            if (!('speechSynthesis' in window)) {
+                console.warn("Speech synthesis not supported in this browser.");
+                return;
+            }
+
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'en-IN';
             utterance.rate = 1;
@@ -143,10 +115,12 @@
             function setVoice() {
                 const voices = speechSynthesis.getVoices();
                 let voice = voices.find(v => v.lang === 'hi-IN')
-                    || voices.find(v => v.lang === 'en-IN')
+                    || voices.find(v => v.lang === 'en-GB')
                     || voices.find(v => v.lang.startsWith('en'))
                     || voices[0];
+
                 if (voice) utterance.voice = voice;
+
                 speechSynthesis.cancel();
                 speechSynthesis.speak(utterance);
             }
@@ -158,8 +132,78 @@
             }
         }
 
-        // Start the detection loop
-        requestAnimationFrame(detectAndSend);
+        // --- Start camera ---
+        navigator.mediaDevices.getUserMedia({ video: {} })
+            .then(stream => video.srcObject = stream)
+            .catch(err => {
+                console.error(err);
+                status.textContent = "Cannot access camera.";
+                status.classList.add('text-danger');
+            });
+
+        let isProcessing = false;
+
+        // --- Capture & send attendance ---
+        async function captureAndSend() {
+            if (isProcessing) return;
+            isProcessing = true;
+            status.textContent = "Processing attendance...";
+            status.classList.remove('text-danger');
+            status.classList.add('sbi-blue');
+
+            const context = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0);
+            const imageData = canvas.toDataURL('image/png');
+
+            const formData = new FormData();
+            formData.append('image', imageData);
+
+            try {
+                const res = await fetch(waveMarkURL, {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrftoken },
+                    body: formData
+                });
+                const data = await res.json();
+                if (data.success) {
+                    status.textContent = data.message;
+                    status.classList.remove('text-danger');
+                    status.classList.add('text-success');
+                    speak(data.message);
+                } else {
+                    status.textContent = data.message || "Face not recognized.";
+                    status.classList.remove('text-success');
+                    status.classList.add('text-danger');
+                }
+            } catch (err) {
+                console.error(err);
+                status.textContent = "Error: " + err.message;
+                status.classList.remove('text-success');
+                status.classList.add('text-danger');
+            } finally {
+                isProcessing = false;
+            }
+        }
+
+        // --- Load models and start detection ---
+        async function initFaceAPI() {
+            await faceapi.nets.tinyFaceDetector.loadFromUri("{% static 'models/' %}");
+            video.addEventListener('play', () => {
+                const interval = setInterval(async () => {
+                    if (isProcessing) return;
+                    const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions());
+                    if (detections.length > 0) {
+                        console.log("Face detected. Sending attendance...");
+                        captureAndSend();
+                    }
+                }, 10000);
+            });
+        }
+
+        window.addEventListener('load', initFaceAPI);
     </script>
 </body>
-</html> -->
+
+</html>
